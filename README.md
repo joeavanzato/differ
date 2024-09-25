@@ -1,5 +1,5 @@
 # differ
-### File System Snapshots
+### File System Snapshots made Easy
 
 #### What is it?
 
@@ -57,4 +57,13 @@ differ will perform a few different checks when looking for changes:
 * Files that do not appear in the newer snapshot but do appear in the previous one (deletion)
 
 All differences are written to a CSV output file (snapshot_diff.csv) in the current working directory.
+
+
+#### Common Extension Lists
+For convenience, a few configuration files are provided inside the configs directory for common use-cases.  They are detailed below;
+
+* malware_hashscan.json
+  * Contains common directories where malware often lives and an extension allow-list for the most common file types encountered during incidents.
+* pre_analysis_snapshot.json
+  * Contains a configuration to snapshot an analysis/sandbox system prior to and following dynamic malware analysis
 
