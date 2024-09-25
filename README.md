@@ -40,3 +40,21 @@ The included default configuration file is shown below and will perform a recurs
 * hash_enabled - if true, will hash all included files
 * hash_algorithm - can be sha1/sha256/md5
 * do_csv_export - if true, will generate a CSV output in addition to parquet
+
+When differ completes, it will store a .parquet file in the current working directory that contains the timestamp and hostname of the snapshot.
+
+#### Comparing Snapshots
+To compare two separate snapshots, use the '-compare' argument as follows:
+```
+differ.exe -compare 1727205513801559400_DESKTOP-KH2I9H2_differ_snapshot.parquet,1727224094973553500_DESKTOP-KH2I9H2_differ_snapshot.parquet
+```
+differ will perform a few different checks when looking for changes:
+* Files with the same path, name and extension but that...
+  * Have different hashes (modification)
+  * Have different modification times (modification)
+  * Have different file sizes (modification)
+* Files that do not appear in the older snapshot but do appear in the newer one (creation)
+* Files that do not appear in the newer snapshot but do appear in the previous one (deletion)
+
+All differences are written to a CSV output file (snapshot_diff.csv) in the current working directory.
+

@@ -383,6 +383,7 @@ func handleComparison(logger zerolog.Logger, files []string) error {
 	if f1rerr != nil {
 		errorText := fmt.Sprintf("Could not read snapshot file: %v", oldSnap)
 		return errors.New(errorText)
+
 	}
 	oldHashSet := map[string]File{}
 	for _, f := range rowsOLD {
@@ -456,6 +457,11 @@ func handleComparison(logger zerolog.Logger, files []string) error {
 				changeRecord.ChangeType = "Modified"
 				// Removing 'Access' comparison for now as it's not very valid since we are accessing it just to grab size/hash
 			} else if oldFile.SizeBytes != newFile.SizeBytes {
+				// Size of File Changed
+				delete(oldHashSet, k)
+				delete(newHashSet, k)
+				changeRecord.ChangeType = "Modified"
+			} else if oldFile.Modified != newFile.Modified {
 				// Size of File Changed
 				delete(oldHashSet, k)
 				delete(newHashSet, k)
