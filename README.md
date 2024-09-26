@@ -3,11 +3,19 @@
 
 #### What is it?
 
-differ is a tool for generating and comparing snapshots of logical drives for any necessary purpose - this may include tasks such as determining changes made by a specific piece of software, changes between Windows patches, malware analysis/sandboxing, integrity checks, etc.
+differ is a purpose-built tool for generating and comparing ('diffing') metadata snapshots of logical drives for any necessary purpose - this may include tasks such as determining changes made by a specific piece of software, changes between Windows patches, malware analysis/sandboxing, integrity checks, etc.
 
 #### Why?
 
-differ was created because I had a need to perform a modular file system snapshot and could not identify a simple but suitable tool for this task.
+differ was created because I had a need to perform a configurable file system metadata snapshot and subsequent comparison and I could not identify a simple and flexible open-source tool for this task.
+
+Example Usecases Include:
+* Baselining the contents of a logical drive to identify all changes following a system/software change
+* Establishing a baseline for use in Incident Response processes and to identify changes in system files or created/deleted files following a breach
+* Identifying differences in pre- and post- metadata snapshots during dynamic malware analysis (files created, files modified, files deleted)
+* Quickly hashing files in any number of directories based on extension allow or block lists to identify any unwanted software
+* Feeding data into allow/block lists to further DFIR processes/investigations
+* Hunting for specific file-types across a system or specific directories
 
 #### How to use?
 
@@ -41,7 +49,17 @@ The included default configuration file is shown below and will perform a recurs
 * hash_algorithm - can be sha1/sha256/md5
 * do_csv_export - if true, will generate a CSV output in addition to parquet
 
-When differ completes, it will store a .parquet file in the current working directory that contains the timestamp and hostname of the snapshot.
+By default, differ will store a *.parquet file in the current working directory that contains the UNIX timestamp and hostname of the snapshot, such as '1727226208164680600_DESKTOP-KH2I9H2_differ_snapshot'.
+
+Enabling CSV exports results in an immediately human-readable file being produced if the user doesn't want to convert the provided parquet to some other format - this is mainly done for storage purposes.
+
+
+#### Command-Line Arguments
+
+```
+-config some_file.json : When specified, differ will ignore all other command-line arguments and rely solely on the data contained within the configuration file for execution.
+-
+```
 
 #### Comparing Snapshots
 To compare two separate snapshots, use the '-compare' argument as follows:

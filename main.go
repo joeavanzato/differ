@@ -17,15 +17,18 @@ import (
 	"hash"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+import _ "net/http/pprof"
 
 var fileChannel = make(chan string)
 var enrichedFileChannel = make(chan File)
@@ -82,15 +85,14 @@ func (job *RunningJobs) SubJob() {
 }*/
 
 type File struct {
-	Key       string // Will be used in-memory only for hash-table lookup of specific file when we are comparing two snapshots
 	Path      string `parquet:"path,zstd"`
 	Name      string `parquet:"name,zstd"`
 	Extension string `parquet:"extension,zstd"`
-	SizeBytes int64  `parquet:"sizeBytes"`
 	Hash      string `parquet:"sha256,zstd"`
-	Created   int64  `parquet:"created"`
-	Modified  int64  `parquet:"modified"`
-	Accessed  int64  `parquet:"accessed"`
+	Created   int32  `parquet:"created"`
+	Modified  int32  `parquet:"modified"`
+	Accessed  int32  `parquet:"accessed"`
+	SizeBytes int64  `parquet:"sizeBytes"`
 }
 
 type FileChange struct {
@@ -98,16 +100,16 @@ type FileChange struct {
 	Path         string
 	Name         string
 	Extension    string
-	OldSizeBytes int64
-	NewSizeBytes int64
 	OldHash      string
 	NewHash      string
-	OldCreated   int64
-	NewCreated   int64
-	OldModified  int64
-	NewModified  int64
-	OldAccessed  int64
-	NewAccessed  int64
+	OldCreated   int32
+	NewCreated   int32
+	OldModified  int32
+	NewModified  int32
+	OldAccessed  int32
+	NewAccessed  int32
+	OldSizeBytes int64
+	NewSizeBytes int64
 }
 
 func (f FileChange) GetHeaders() []string {
@@ -234,6 +236,14 @@ func validateConfig(logger zerolog.Logger) error {
 }
 
 func main() {
+
+	f, err := os.Create("cpuprof")
+	if err != nil {
+		log.Fatal(err)
+	}
+	pprof.WriteHeapProfile(f)
+	defer pprof.StopCPUProfile()
+
 	logger := setupLogger()
 	logger.Info().Msg("differ")
 	logger.Info().Msg("Starting Up...")
@@ -317,6 +327,7 @@ func main() {
 			logger.Error().Msgf("Could not split compare argument into two strings - missing single comma?")
 			return
 		}
+		logger.Info().Msgf("Comparing %s to %s", files[0], files[1])
 		compareError := handleComparison(logger, files)
 		if compareError != nil {
 			logger.Error().Msgf(compareError.Error())
@@ -368,40 +379,6 @@ func handleComparison(logger zerolog.Logger, files []string) error {
 		newSnap = files[0]
 	}
 
-	// Types of snapshot changes
-	// Files can be deleted, modified, accessed or created
-	// To detect changes, we will first load both datasets into memory
-	// 1. We will first find check all cross-hashes - files that have the same hash in the same directory
-	//  	-If the name is different, we will record this as a modification
-	//		-If the name is the same but Access time is different, we will record this as an access
-	//		-If everything is the same, will not record an update
-	// This will remove a significant amount of data.
-	// 2. We will then check for deleted files - this basically means checking if same file name disappears from each directory
-	// 3. Finally we will check for new files - files that only appear in the newer dataset.
-	PrintMemUsage()
-	rowsOLD, f1rerr := parquet.ReadFile[File](oldSnap)
-	if f1rerr != nil {
-		errorText := fmt.Sprintf("Could not read snapshot file: %v", oldSnap)
-		return errors.New(errorText)
-
-	}
-	oldHashSet := map[string]File{}
-	for _, f := range rowsOLD {
-		//oldHashSet[quickHash(fmt.Sprintf("%v%v%v%v%v%v%v%v", f.Path, f.Name, f.Extension, f.SizeBytes, f.Hash, f.Created, f.Accessed, f.Modified))] = f
-		oldHashSet[quickHash(fmt.Sprintf("%v%v%v", f.Path, f.Name, f.Extension))] = f
-	}
-	rowsNEW, f2rerr := parquet.ReadFile[File](newSnap)
-	if f2rerr != nil {
-		errorText := fmt.Sprintf("Could not read snapshot file: %v", newSnap)
-		return errors.New(errorText)
-	}
-	newHashSet := map[string]File{}
-	for _, f := range rowsNEW {
-		//newHashSet[quickHash(fmt.Sprintf("%v%v%v%v%v%v%v%v", f.Path, f.Name, f.Extension, f.SizeBytes, f.Hash, f.Created, f.Accessed, f.Modified))] = f
-		newHashSet[quickHash(fmt.Sprintf("%v%v%v", f.Path, f.Name, f.Extension))] = f
-	}
-	fmt.Println(len(newHashSet))
-
 	// CSV STUFF
 	var changeRecordChannel = make(chan FileChange)
 	var csvWG sync.WaitGroup
@@ -420,6 +397,200 @@ func handleComparison(logger zerolog.Logger, files []string) error {
 	csvWG.Add(1)
 	go csvChangeWriteListener(changeRecordChannel, writer, logger, csvOutFile, 10000, &csvWG)
 	///
+
+	// Types of snapshot changes
+	// Files can be deleted, modified, accessed or created
+	// To detect changes, we will first load both datasets into memory
+	// 1. We will first find check all cross-hashes - files that have the same hash in the same directory
+	//  	-If the name is different, we will record this as a modification
+	//		-If the name is the same but Access time is different, we will record this as an access
+	//		-If everything is the same, will not record an update
+	// This will remove a significant amount of data.
+	// 2. We will then check for deleted files - this basically means checking if same file name disappears from each directory
+	// 3. Finally we will check for new files - files that only appear in the newer dataset.
+	PrintMemUsage()
+
+	cerr := handleComparisonEfficient(oldSnap, newSnap, changeRecordChannel)
+	if cerr != nil {
+		return cerr
+	}
+	close(changeRecordChannel)
+	csvWG.Wait()
+	PrintMemUsage()
+
+	return nil
+}
+
+func handleComparisonEfficient(oldSnap string, newSnap string, changeRecordChannel chan FileChange) error {
+
+	// Instead of reading entire file, we need to be more pragmatic - snapshot of a typical ~2 TB drive consumes about ~5/6 GB in memory currently
+	// We can either reduce memory footprint or reduce need to read entire data model into memory
+	// We read 1k records from old snapshot, then 1k records from new snapshot - these should be 'mostly' aligned since walkdir is predictable in nature - we could remove go procs from walkdir to enhance this process
+	// We then remove duplicates from memory immediately, then handle any differences when there are matching file paths/names or matching hashes - then store the rest and continue the process
+	fOld, err := os.Open(oldSnap)
+	if err != nil {
+		return err
+	}
+	fNew, err := os.Open(newSnap)
+	if err != nil {
+		return err
+	}
+	totalOldRowsRead := 0
+	totalNewRowsRead := 0
+	maxReadSize := 10000
+	rowsOld := make([]File, maxReadSize)
+	rowsNew := make([]File, maxReadSize)
+	rold := parquet.NewGenericReader[File](fOld)
+	rnew := parquet.NewGenericReader[File](fNew)
+
+	oldRowsTemp := map[string]File{}
+	newRowsTemp := map[string]File{}
+
+	for true {
+		// loop 1 for 'old' snapshot
+		rowsReadOld, errOldRead := readRowsOrError(rold, rowsOld)
+		totalOldRowsRead += rowsReadOld
+		rowsReadNew, errNewRead := readRowsOrError(rnew, rowsNew)
+		totalNewRowsRead += rowsReadNew
+
+		for _, v := range rowsOld {
+			oldRowsTemp[quickHash(fmt.Sprintf("%v%v%v", v.Path, v.Name, v.Extension))] = v
+		}
+		for _, v := range rowsNew {
+			newRowsTemp[quickHash(fmt.Sprintf("%v%v%v", v.Path, v.Name, v.Extension))] = v
+		}
+
+		// iterate existing to compare/delete/etc
+		for k, v := range newRowsTemp {
+			oldFile, ok := oldRowsTemp[k]
+			if ok {
+				changeRecord := FileChange{
+					ChangeType:   "Modified",
+					Path:         v.Path,
+					Name:         v.Name,
+					Extension:    v.Extension,
+					OldSizeBytes: oldFile.SizeBytes,
+					NewSizeBytes: v.SizeBytes,
+					OldHash:      oldFile.Hash,
+					NewHash:      v.Hash,
+					OldCreated:   oldFile.Created,
+					NewCreated:   v.Created,
+					OldModified:  oldFile.Modified,
+					NewModified:  v.Modified,
+					OldAccessed:  oldFile.Accessed,
+					NewAccessed:  v.Accessed,
+				}
+				// same file exists in the 'old' snapshot
+				// check if hash is the same
+				if oldFile.Hash != v.Hash {
+					// Hash Changed
+					delete(newRowsTemp, k)
+					delete(oldRowsTemp, k)
+					changeRecordChannel <- changeRecord
+				} else if oldFile.SizeBytes != v.SizeBytes {
+					// Size Change
+					delete(newRowsTemp, k)
+					delete(oldRowsTemp, k)
+					changeRecordChannel <- changeRecord
+				} else {
+					// Hash is same, Size is same - same file with same name and same extension/hash/size - no change, remove
+					// 'Identical' File
+					delete(newRowsTemp, k)
+					delete(oldRowsTemp, k)
+				}
+			} else {
+				// file doesn't exist yet in old rows - might never, but we can't be sure (yet) - so we just do nothing with it for now
+			}
+		}
+
+		if errOldRead == nil && errNewRead == nil {
+			// we continued reading both of these without any problems
+
+		} else if errOldRead == nil && errNewRead != nil {
+
+		} else if errOldRead != nil && errNewRead == nil {
+		} else {
+			// both errored - done reading
+			// finish processing remainders - which should realistically be creations and deletions as all modifications should already be handled
+			for _, v := range newRowsTemp {
+				// Everything left in here should represent a 'new' file that was not observed in the older snapshot
+				changeRecord := FileChange{
+					ChangeType:   "Created",
+					Path:         v.Path,
+					Name:         v.Name,
+					Extension:    v.Extension,
+					OldSizeBytes: 0,
+					NewSizeBytes: v.SizeBytes,
+					OldHash:      "",
+					NewHash:      v.Hash,
+					OldCreated:   0,
+					NewCreated:   v.Created,
+					OldModified:  0,
+					NewModified:  v.Modified,
+					OldAccessed:  0,
+					NewAccessed:  v.Accessed,
+				}
+				changeRecordChannel <- changeRecord
+			}
+			for _, v := range oldRowsTemp {
+				// Everything left in here should represent an 'old' file that was not observed in the newer snapshot
+				changeRecord := FileChange{
+					ChangeType:   "Deleted",
+					Path:         v.Path,
+					Name:         v.Name,
+					Extension:    v.Extension,
+					OldSizeBytes: v.SizeBytes,
+					NewSizeBytes: 0,
+					OldHash:      v.Hash,
+					NewHash:      "",
+					OldCreated:   v.Created,
+					NewCreated:   0,
+					OldModified:  v.Modified,
+					NewModified:  0,
+					OldAccessed:  v.Accessed,
+					NewAccessed:  0,
+				}
+				changeRecordChannel <- changeRecord
+			}
+			return nil
+		}
+
+	}
+	return nil
+}
+
+func readRowsOrError(r *parquet.GenericReader[File], rows []File) (int, error) {
+	rowsRead, err := r.Read(rows)
+	return rowsRead, err
+}
+
+func handleComparisonIneffcient(oldSnap string, newSnap string, changeRecordChannel chan FileChange) error {
+	// Below works for procewssing entire files at once
+	rowsOLD, f1rerr := parquet.ReadFile[File](oldSnap)
+	if f1rerr != nil {
+		errorText := fmt.Sprintf("Could not read snapshot file: %v", oldSnap)
+		return errors.New(errorText)
+
+	}
+	oldHashSet := map[string]File{}
+	for _, f := range rowsOLD {
+		//oldHashSet[quickHash(fmt.Sprintf("%v%v%v%v%v%v%v%v", f.Path, f.Name, f.Extension, f.SizeBytes, f.Hash, f.Created, f.Accessed, f.Modified))] = f
+		oldHashSet[quickHash(fmt.Sprintf("%v%v%v", f.Path, f.Name, f.Extension))] = f
+	}
+	rowsOLD = nil
+	rowsNEW, f2rerr := parquet.ReadFile[File](newSnap)
+	if f2rerr != nil {
+		errorText := fmt.Sprintf("Could not read snapshot file: %v", newSnap)
+		return errors.New(errorText)
+	}
+	newHashSet := map[string]File{}
+	for _, f := range rowsNEW {
+		//newHashSet[quickHash(fmt.Sprintf("%v%v%v%v%v%v%v%v", f.Path, f.Name, f.Extension, f.SizeBytes, f.Hash, f.Created, f.Accessed, f.Modified))] = f
+		newHashSet[quickHash(fmt.Sprintf("%v%v%v", f.Path, f.Name, f.Extension))] = f
+	}
+	rowsNEW = nil
+	PrintMemUsage()
+	fmt.Println(len(newHashSet))
 
 	// First remove duplicates - these are files that are an exact match and as such do not need further inspection
 	for k, newFile := range newHashSet {
@@ -502,12 +673,7 @@ func handleComparison(logger zerolog.Logger, files []string) error {
 		}
 		changeRecordChannel <- changeRecord
 	}
-	close(changeRecordChannel)
-	csvWG.Wait()
 	fmt.Println(len(newHashSet))
-
-	PrintMemUsage()
-
 	return nil
 }
 
@@ -778,13 +944,13 @@ func processPaths(files []string, wg *sync.WaitGroup, r *RunningJobs) {
 			Hash:      fileHash,
 			Created:   0,
 			Modified:  0,
-			Accessed:  filetimes.AccessTime().Unix(),
+			Accessed:  int32(filetimes.AccessTime().Unix()),
 		}
 		if filetimes.HasChangeTime() {
-			tmp.Modified = filetimes.ChangeTime().Unix()
+			tmp.Modified = int32(filetimes.ChangeTime().Unix())
 		}
 		if filetimes.HasBirthTime() {
-			tmp.Created = filetimes.BirthTime().Unix()
+			tmp.Created = int32(filetimes.BirthTime().Unix())
 		}
 		enrichedFileChannel <- tmp
 	}
@@ -793,13 +959,14 @@ func processPaths(files []string, wg *sync.WaitGroup, r *RunningJobs) {
 func fileListener(c chan string, wg *sync.WaitGroup) {
 	tempRecords := make([]string, 0)
 	var fileWG sync.WaitGroup
-	maxWorkers := 100
+	maxWorkers := 250
 	maxRecordsPerWorker := 1000
 	jobTracker := RunningJobs{
 		JobCount: 0,
 		Mw:       sync.RWMutex{},
 	}
 	for {
+		//fmt.Println(jobTracker.GetJobs())
 		record, ok := <-c
 		if !ok {
 			break
