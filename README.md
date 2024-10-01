@@ -1,11 +1,11 @@
 # differ
-### File System Snapshots made Easy
+## File System Metadata Snapshots made Easy
 
-#### What is it?
+### What is it?
 
 differ is a purpose-built tool for generating and comparing ('diffing') metadata snapshots of logical drives for any necessary purpose - this may include tasks such as determining changes made by a specific piece of software, changes between Windows patches, malware analysis/sandboxing, integrity checks, etc.
 
-#### Why?
+### Why?
 
 differ was created because I had a need to perform a configurable file system metadata snapshot and subsequent comparison and I could not identify a simple and flexible open-source tool for this task.
 
@@ -17,9 +17,18 @@ Example Usecases Include:
 * Feeding data into allow/block lists to further DFIR processes/investigations
 * Hunting for specific file-types across a system or specific directories
 
-#### How to use?
+### How to use?
 
 differ can be run both through command-line arguments or fed a configuration file - the easiest way to use it is to download the most recent build - this will include differ.exe and differ_config.json.
+
+
+### Configuration File
+
+To launch differ using a configuration file, just tell it where to find it like below;
+```
+differ.exe -config "config.json"
+differ.exe -config "some\\path\\to\\config.json"
+```
 
 The included default configuration file is shown below and will perform a recursive scan across the entire C:\ logical drive, hashing each file along the way with no restrictions.
 
@@ -54,14 +63,17 @@ By default, differ will store a *.parquet file in the current working directory 
 Enabling CSV exports results in an immediately human-readable file being produced if the user doesn't want to convert the provided parquet to some other format - this is mainly done for storage purposes.
 
 
-#### Command-Line Arguments
+### Command-Line Arguments
 
 ```
 -config some_file.json : When specified, differ will ignore all other command-line arguments and rely solely on the data contained within the configuration file for execution.
--
+-directory "C:\\" : Tells differ the directory to use as the starting point for a recursive file-walk snapshot
+-csv : Tells differ to also produce CSV output in addition to the default Parquet
+-hash md5 / -hash sha1 / -hash sha256 : Tells differ to also compute the hash of all scanned files using one of the specified algorithms
+-compare file1,file2 : Tells differ to 'diff' the two provided files - differ will automatically attempt to determine which one is older/newer based on the file naming format
 ```
 
-#### Comparing Snapshots
+### Comparing Snapshots
 To compare two separate snapshots, use the '-compare' argument as follows:
 ```
 differ.exe -compare 1727205513801559400_DESKTOP-KH2I9H2_differ_snapshot.parquet,1727224094973553500_DESKTOP-KH2I9H2_differ_snapshot.parquet
@@ -76,8 +88,10 @@ differ will perform a few different checks when looking for changes:
 
 All differences are written to a CSV output file (snapshot_diff.csv) in the current working directory.
 
+Be aware there are caveats here - if a file is moved between two directories, we will count that as both a deletion and creation since we are not doing 'hash-scanning' across the entire snapshot at this time.
 
-#### Common Extension Lists
+
+### Common Extension Lists
 For convenience, a few configuration files are provided inside the configs directory for common use-cases.  They are detailed below;
 
 * malware_hashscan.json
