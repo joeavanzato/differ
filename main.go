@@ -453,12 +453,18 @@ func handleComparisonEfficient(oldSnap string, newSnap string, changeRecordChann
 		rowsReadNew, errNewRead := readRowsOrError(rnew, rowsNew)
 		totalNewRowsRead += rowsReadNew
 
-		for _, v := range rowsOld {
-			oldRowsTemp[quickHash(fmt.Sprintf("%v%v%v", v.Path, v.Name, v.Extension))] = v
+		for i := 0; i < rowsReadOld; i++ {
+			oldRowsTemp[quickHash(fmt.Sprintf("%v%v%v", rowsOld[i].Path, rowsOld[i].Name, rowsOld[i].Extension))] = rowsOld[i]
 		}
-		for _, v := range rowsNew {
-			newRowsTemp[quickHash(fmt.Sprintf("%v%v%v", v.Path, v.Name, v.Extension))] = v
+		for i := 0; i < rowsReadNew; i++ {
+			newRowsTemp[quickHash(fmt.Sprintf("%v%v%v", rowsNew[i].Path, rowsNew[i].Name, rowsNew[i].Extension))] = rowsNew[i]
 		}
+		/*		for _, v := range rowsReadOld {
+					oldRowsTemp[quickHash(fmt.Sprintf("%v%v%v", v.Path, v.Name, v.Extension))] = v
+				}
+				for _, v := range rowsNew {
+					newRowsTemp[quickHash(fmt.Sprintf("%v%v%v", v.Path, v.Name, v.Extension))] = v
+				}*/
 
 		// iterate existing to compare/delete/etc
 		for k, v := range newRowsTemp {
@@ -510,53 +516,61 @@ func handleComparisonEfficient(oldSnap string, newSnap string, changeRecordChann
 
 		} else if errOldRead != nil && errNewRead == nil {
 		} else {
-			// both errored - done reading
+			// both streams errored on the read
 			// finish processing remainders - which should realistically be creations and deletions as all modifications should already be handled
 			for _, v := range newRowsTemp {
 				// Everything left in here should represent a 'new' file that was not observed in the older snapshot
-				changeRecord := FileChange{
-					ChangeType:   "Created",
-					Path:         v.Path,
-					Name:         v.Name,
-					Extension:    v.Extension,
-					OldSizeBytes: 0,
-					NewSizeBytes: v.SizeBytes,
-					OldHash:      "",
-					NewHash:      v.Hash,
-					OldCreated:   0,
-					NewCreated:   v.Created,
-					OldModified:  0,
-					NewModified:  v.Modified,
-					OldAccessed:  0,
-					NewAccessed:  v.Accessed,
-				}
-				changeRecordChannel <- changeRecord
+				makeCreationRecord(v, changeRecordChannel)
 			}
 			for _, v := range oldRowsTemp {
 				// Everything left in here should represent an 'old' file that was not observed in the newer snapshot
-				changeRecord := FileChange{
-					ChangeType:   "Deleted",
-					Path:         v.Path,
-					Name:         v.Name,
-					Extension:    v.Extension,
-					OldSizeBytes: v.SizeBytes,
-					NewSizeBytes: 0,
-					OldHash:      v.Hash,
-					NewHash:      "",
-					OldCreated:   v.Created,
-					NewCreated:   0,
-					OldModified:  v.Modified,
-					NewModified:  0,
-					OldAccessed:  v.Accessed,
-					NewAccessed:  0,
-				}
-				changeRecordChannel <- changeRecord
+				makeDeletionRecord(v, changeRecordChannel)
 			}
 			return nil
 		}
 
 	}
 	return nil
+}
+
+func makeCreationRecord(v File, c chan FileChange) {
+	changeRecord := FileChange{
+		ChangeType:   "Created",
+		Path:         v.Path,
+		Name:         v.Name,
+		Extension:    v.Extension,
+		OldSizeBytes: 0,
+		NewSizeBytes: v.SizeBytes,
+		OldHash:      "",
+		NewHash:      v.Hash,
+		OldCreated:   0,
+		NewCreated:   v.Created,
+		OldModified:  0,
+		NewModified:  v.Modified,
+		OldAccessed:  0,
+		NewAccessed:  v.Accessed,
+	}
+	c <- changeRecord
+}
+
+func makeDeletionRecord(v File, c chan FileChange) {
+	changeRecord := FileChange{
+		ChangeType:   "Deleted",
+		Path:         v.Path,
+		Name:         v.Name,
+		Extension:    v.Extension,
+		OldSizeBytes: v.SizeBytes,
+		NewSizeBytes: 0,
+		OldHash:      v.Hash,
+		NewHash:      "",
+		OldCreated:   v.Created,
+		NewCreated:   0,
+		OldModified:  v.Modified,
+		NewModified:  0,
+		OldAccessed:  v.Accessed,
+		NewAccessed:  0,
+	}
+	c <- changeRecord
 }
 
 func readRowsOrError(r *parquet.GenericReader[File], rows []File) (int, error) {
@@ -678,8 +692,8 @@ func handleComparisonIneffcient(oldSnap string, newSnap string, changeRecordChan
 }
 
 func quickHash(s string) string {
-	hash := md5.Sum([]byte(s))
-	return hex.EncodeToString(hash[:])
+	_hash := md5.Sum([]byte(s))
+	return hex.EncodeToString(_hash[:])
 }
 
 func PrintMemUsage() {
@@ -769,6 +783,17 @@ func validateDirectoryExists(dir string) (bool, error) {
 }
 
 func processEnrichedFiles(c chan File, wg *sync.WaitGroup, timestamp string) {
+	// working for parquet-go
+	// timings on a user documents dir for compression method when assigning the same method to all struct fields
+	/*	none - 5:59 - 723 MB - 10k
+		snappy - 4:56 - 296 MB- 10k
+		lz4raw - 5:07 - 723 MB- 10k
+		zstd - 5:04 - 223 MB- 10k
+		zstd - 5:02 - 222 MB - 100K
+		gzip - 5:25 - 186 MB- 10k
+		brotli - 5:42 - 200 MB- 10k
+		lzo - 5:50 - 723 MB- 10k
+	*/
 	defer wg.Done()
 	recordBuffer := 100000
 	tempRecords := make([]File, 0)
@@ -788,30 +813,16 @@ func processEnrichedFiles(c chan File, wg *sync.WaitGroup, timestamp string) {
 	}
 	defer f.Close()
 
-	// working for parquet-go
-	// timings on a user documents dir for compression method when assigning the same method to all struct fields
-	/*	none - 5:59 - 723 MB - 10k
-		snappy - 4:56 - 296 MB- 10k
-		lz4raw - 5:07 - 723 MB- 10k
-		zstd - 5:04 - 223 MB- 10k
-		zstd - 5:02 - 222 MB - 100K
-		gzip - 5:25 - 186 MB- 10k
-		brotli - 5:42 - 200 MB- 10k
-		lzo - 5:50 - 723 MB- 10k
-	*/
 	writer := parquet.NewWriter(f, parquet.Compression(&zstd.Codec{Level: zstd.SpeedFastest, Concurrency: 2}))
 	//writer := parquet.NewWriter(f)
 	defer writer.Close()
-	for {
-		record, ok := <-c
-		if !ok {
-			break
-		} else if len(tempRecords) < recordBuffer {
-			if config.DoCSVExport {
-				csvRecordChannel <- record
-			}
-			tempRecords = append(tempRecords, record)
-		} else {
+	for record := range c {
+		if config.DoCSVExport {
+			csvRecordChannel <- record
+		}
+		tempRecords = append(tempRecords, record)
+
+		if len(tempRecords) > recordBuffer {
 			for _, row := range tempRecords {
 				if err := writer.Write(row); err != nil {
 					fmt.Println(err)
@@ -820,11 +831,13 @@ func processEnrichedFiles(c chan File, wg *sync.WaitGroup, timestamp string) {
 			tempRecords = nil
 		}
 	}
+
 	for _, row := range tempRecords {
 		if err := writer.Write(row); err != nil {
 			fmt.Println(err)
 		}
 	}
+	writer.Flush()
 
 	//working for hamba/avro method
 	/*	enc, err := ocf.NewEncoder(schema.String(), f)
@@ -929,11 +942,16 @@ func processPaths(files []string, wg *sync.WaitGroup, r *RunningJobs) {
 				_, copyerr := io.Copy(h, f)
 				if copyerr == nil {
 					fileHash = fmt.Sprintf("%x", h.Sum(nil))
-					f.Close()
+					cerr := f.Close()
+					if cerr != nil {
+						fmt.Printf("Error Closing File: %v \n", f.Name())
+					}
 				}
-				f.Close()
+				cerr := f.Close()
+				if cerr != nil {
+					//fmt.Printf("Error Closing File: %v \n", f.Name())
+				}
 			}
-			f.Close()
 		}
 
 		tmp := File{
@@ -957,6 +975,7 @@ func processPaths(files []string, wg *sync.WaitGroup, r *RunningJobs) {
 }
 
 func fileListener(c chan string, wg *sync.WaitGroup) {
+	defer wg.Done()
 	tempRecords := make([]string, 0)
 	var fileWG sync.WaitGroup
 	maxWorkers := 250
@@ -965,14 +984,10 @@ func fileListener(c chan string, wg *sync.WaitGroup) {
 		JobCount: 0,
 		Mw:       sync.RWMutex{},
 	}
-	for {
-		//fmt.Println(jobTracker.GetJobs())
-		record, ok := <-c
-		if !ok {
-			break
-		} else if len(tempRecords) <= maxRecordsPerWorker {
-			tempRecords = append(tempRecords, record)
-		} else {
+
+	for record := range c {
+		tempRecords = append(tempRecords, record)
+		if len(tempRecords) > maxRecordsPerWorker {
 			if jobTracker.GetJobs() < maxWorkers {
 				fileWG.Add(1)
 				jobTracker.AddJob()
@@ -1025,8 +1040,8 @@ func generateSnapshot(logger zerolog.Logger, args map[string]any) error {
 	timestamp := strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
 
 	var csvWG sync.WaitGroup
+	csvOut := fmt.Sprintf("%s_differ.csv", timestamp)
 	if config.DoCSVExport {
-		csvOut := fmt.Sprintf("%s_differ.csv", timestamp)
 		csvOutFile, csverr := os.Create(csvOut)
 		if csverr != nil {
 			return csverr
@@ -1042,25 +1057,41 @@ func generateSnapshot(logger zerolog.Logger, args map[string]any) error {
 		go csvWriteListener(csvRecordChannel, writer, logger, csvOutFile, 10000, &csvWG)
 	}
 
+	// Listener to process files
 	var fileReaderWaitGroup sync.WaitGroup
+	fileReaderWaitGroup.Add(1)
+	go fileListener(fileChannel, &fileReaderWaitGroup)
+
+	// Listener to write files to storage
 	var enrichedFileProcessWaitGroup sync.WaitGroup
 	enrichedFileProcessWaitGroup.Add(1)
-
-	go fileListener(fileChannel, &fileReaderWaitGroup)
 	go processEnrichedFiles(enrichedFileChannel, &enrichedFileProcessWaitGroup, timestamp)
+
+	// Sync for file-walking if doing multiple dirs
 	var fileWalkingWaitGroup sync.WaitGroup
 	for _, v := range config.Directories {
 		fileWalkingWaitGroup.Add(1)
 		go walkDirectory(v, &fileWalkingWaitGroup)
 	}
 	fileWalkingWaitGroup.Wait()
-	fileReaderWaitGroup.Wait()
+
+	// Once all file walking is complete, we can safely close the file channel
 	close(fileChannel)
+
+	// Wait for the file listener to finish draining fileChannel and processing walked files
+	fileReaderWaitGroup.Wait()
+	// Wait for enrichedFileChannel to finish writing to CSV channel and Parquet file
 	enrichedFileProcessWaitGroup.Wait()
+	// Now we can safely close csvRecordChannel as all sends should be completed
 	close(csvRecordChannel)
+	// Wait for CSV to finish writing
 	csvWG.Wait()
+	// SHOULD be done at this point with all async-style tasks
 	duration := time.Since(start)
 	logger.Info().Msgf("Done Processing All Paths, Duration: %s", duration)
+	if config.DoCSVExport {
+		logger.Info().Msgf("CSV Export saved to: %s", csvOut)
+	}
 
 	return nil
 }
