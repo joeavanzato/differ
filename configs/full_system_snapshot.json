@@ -1,0 +1,16 @@
+{
+    "directories": [
+        "C:\\"
+    ],
+    "use_extension_allowlist": false,
+    "extension_allowlist": [
+        ".exe"
+    ],
+    "use_extension_blocklist": false,
+    "extension_blocklist": [
+        ".txt"
+    ],
+    "hash_enabled": true,
+    "hash_algorithm": "sha1",
+    "do_csv_export": false
+}
