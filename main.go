@@ -17,7 +17,6 @@ import (
 	"hash"
 	"io"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -170,6 +169,7 @@ func parseArgs() (map[string]any, error) {
 	docsv := flag.Bool("csv", false, "Produce a CSV output in addition to default AVRO OCF for human readability")
 	hashtype := flag.String("hash", "", "Will add the specified hash into the output (md5, sha1, sha256)")
 	configfile := flag.String("config", "", "Location of a configuration file - if specified, will ignore other command-line arguments to only use options from the config file.  Example: -config differ_config.json")
+	memoryprofile := flag.Bool("mem", false, "Generate memory-usage profile")
 
 	flag.Parse()
 
@@ -181,11 +181,12 @@ func parseArgs() (map[string]any, error) {
 	}
 
 	arguments := map[string]any{
-		"compare":   *compare,
-		"directory": *directory,
-		"csv":       *docsv,
-		"hash":      *hashtype,
-		"config":    *configfile,
+		"compare":       *compare,
+		"directory":     *directory,
+		"csv":           *docsv,
+		"hash":          *hashtype,
+		"config":        *configfile,
+		"memoryprofile": *memoryprofile,
 	}
 
 	return arguments, nil
@@ -237,12 +238,9 @@ func validateConfig(logger zerolog.Logger) error {
 
 func main() {
 
-	f, err := os.Create("cpuprof")
-	if err != nil {
-		log.Fatal(err)
-	}
-	pprof.WriteHeapProfile(f)
-	defer pprof.StopCPUProfile()
+	// Ideas to reduce space on disk
+	// Convert Paths -> PathID and store int instead of string
+	// Convert Extension -> ExtensionID and store int instead of string
 
 	logger := setupLogger()
 	logger.Info().Msg("differ")
@@ -252,8 +250,18 @@ func main() {
 		logger.Error().Msgf(err.Error())
 		return
 	}
+
+	if args["memoryprofile"].(bool) {
+		f, memerr := os.Create("memprof")
+		if memerr != nil {
+			logger.Error().Msgf("Failure to create output file for memory profile: %s", memerr.Error())
+		}
+		pprof.WriteHeapProfile(f)
+		//defer pprof.StopCPUProfile()
+	}
+
 	doingCompare := false
-	if args["compare"] != "" {
+	if args["compare"].(string) != "" {
 		doingCompare = true
 	}
 
@@ -292,31 +300,6 @@ func main() {
 		}
 		config.Directories = []string{args["directory"].(string)}
 	}
-
-	// TODO - Remove this
-	// Ideas to reduce space
-	// Convert Paths -> PathID and store int instead of string
-	// Convert Extension -> ExtensionID and store int instead of string
-	//
-	/*	schema, schemaerr := avro.Parse(`{
-		"name": "file",
-		"type": "record",
-		"fields": [
-		  {"name": "path", "type": "string"},
-		  {"name": "name", "type": "string"},
-		  {"name": "extension", "type": "string"},
-		  {"name": "bytes", "type": "long"},
-		  {"name": "sha256", "type": "string"},
-		  {"name": "created", "type": "int"},
-		  {"name": "modified", "type": "int"},
-		  {"name": "accessed", "type": "int"}
-		]
-		}`)
-
-		if schemaerr != nil {
-			logger.Error().Msgf(schemaerr.Error())
-			return
-		}*/
 
 	if doingCompare {
 		// do a snapshot comparison between two files
@@ -408,20 +391,21 @@ func handleComparison(logger zerolog.Logger, files []string) error {
 	// This will remove a significant amount of data.
 	// 2. We will then check for deleted files - this basically means checking if same file name disappears from each directory
 	// 3. Finally we will check for new files - files that only appear in the newer dataset.
-	PrintMemUsage()
+	//PrintMemUsage()
 
-	cerr := handleComparisonEfficient(oldSnap, newSnap, changeRecordChannel)
+	cerr := handleComparisonEfficient(oldSnap, newSnap, changeRecordChannel, logger)
 	if cerr != nil {
 		return cerr
 	}
 	close(changeRecordChannel)
 	csvWG.Wait()
-	PrintMemUsage()
+	//PrintMemUsage()
+	logger.Info().Msgf("Snapshot difference saved to: %v", csvOut)
 
 	return nil
 }
 
-func handleComparisonEfficient(oldSnap string, newSnap string, changeRecordChannel chan FileChange) error {
+func handleComparisonEfficient(oldSnap string, newSnap string, changeRecordChannel chan FileChange, logger zerolog.Logger) error {
 
 	// Instead of reading entire file, we need to be more pragmatic - snapshot of a typical ~2 TB drive consumes about ~5/6 GB in memory currently
 	// We can either reduce memory footprint or reduce need to read entire data model into memory
@@ -445,6 +429,11 @@ func handleComparisonEfficient(oldSnap string, newSnap string, changeRecordChann
 
 	oldRowsTemp := map[string]File{}
 	newRowsTemp := map[string]File{}
+
+	countFilesCreated := 0
+	countFilesModified := 0
+	countFilesDeleted := 0
+	countFilesUnchanged := 0
 
 	for true {
 		// loop 1 for 'old' snapshot
@@ -493,16 +482,19 @@ func handleComparisonEfficient(oldSnap string, newSnap string, changeRecordChann
 					delete(newRowsTemp, k)
 					delete(oldRowsTemp, k)
 					changeRecordChannel <- changeRecord
+					countFilesModified += 1
 				} else if oldFile.SizeBytes != v.SizeBytes {
 					// Size Change
 					delete(newRowsTemp, k)
 					delete(oldRowsTemp, k)
 					changeRecordChannel <- changeRecord
+					countFilesModified += 1
 				} else {
 					// Hash is same, Size is same - same file with same name and same extension/hash/size - no change, remove
 					// 'Identical' File
 					delete(newRowsTemp, k)
 					delete(oldRowsTemp, k)
+					countFilesUnchanged += 1
 				}
 			} else {
 				// file doesn't exist yet in old rows - might never, but we can't be sure (yet) - so we just do nothing with it for now
@@ -521,11 +513,17 @@ func handleComparisonEfficient(oldSnap string, newSnap string, changeRecordChann
 			for _, v := range newRowsTemp {
 				// Everything left in here should represent a 'new' file that was not observed in the older snapshot
 				makeCreationRecord(v, changeRecordChannel)
+				countFilesCreated += 1
 			}
 			for _, v := range oldRowsTemp {
 				// Everything left in here should represent an 'old' file that was not observed in the newer snapshot
 				makeDeletionRecord(v, changeRecordChannel)
+				countFilesDeleted += 1
 			}
+			logger.Info().Msgf("Files Unchanged: %v", countFilesUnchanged)
+			logger.Info().Msgf("Files Modified: %v", countFilesModified)
+			logger.Info().Msgf("Files Created: %v", countFilesCreated)
+			logger.Info().Msgf("Files Deleted: %v", countFilesDeleted)
 			return nil
 		}
 
