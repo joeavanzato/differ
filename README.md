@@ -33,7 +33,7 @@ differ.exe -config "some\\path\\to\\config.json"
 
 The full_system_snapshot configuration file is shown below - this configuration tells differ to recursively snapshot the metadata for all files starting at C:\ with no restrictions on extensions and performing the SHA1 hash of each encountered file.  CSV export is disabled by default.
 
-On a common personal system using a nearly-full 2 TB M.2 SSD, this type of scan will take approximately 10-15 minutes.  The type of disk drive and connection mechanism will greatly influence the speed of the snapshot due to the potential for increased read-times.  I would recommend only snapshotting required directories and extensions when possible.
+On a common personal system using a nearly-full 2 TB M.2 SSD, this type of scan will take approximately 15-30 minutes depending on CPU availability.  The type of disk drive and connection mechanism will greatly influence the speed of the snapshot due to the potential for increased read-times.  I would recommend only snapshotting required directories and extensions when possible.
 
 ```json
 {
