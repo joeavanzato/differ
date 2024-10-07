@@ -26,11 +26,14 @@ differ can be run both through command-line arguments or fed a configuration fil
 
 To launch differ using a configuration file, just tell it where to find it like below;
 ```
-differ.exe -config "config.json"
+differ.exe -config "configs\full_system_snapshot.json"
+differ.exe -config "configs\full_scan_common_malware_extensions.json"
 differ.exe -config "some\\path\\to\\config.json"
 ```
 
-The included default configuration file is shown below and will perform a recursive scan across the entire C:\ logical drive, hashing each file along the way with no restrictions.
+The full_system_snapshot configuration file is shown below - this configuration tells differ to recursively snapshot the metadata for all files starting at C:\ with no restrictions on extensions and performing the SHA1 hash of each encountered file.  CSV export is disabled by default.
+
+On a common personal system using a nearly-full 2 TB M.2 SSD, this type of scan will take approximately 10-15 minutes.  The type of disk drive and connection mechanism will greatly influence the speed of the snapshot due to the potential for increased read-times.  I would recommend only snapshotting required directories and extensions when possible.
 
 ```json
 {
@@ -47,7 +50,7 @@ The included default configuration file is shown below and will perform a recurs
     ],
     "hash_enabled": true,
     "hash_algorithm": "sha1",
-    "do_csv_export": true
+    "do_csv_export": false
 }
 ```
 
@@ -94,8 +97,10 @@ Be aware there are caveats here - if a file is moved between two directories, we
 ### Common Extension Lists
 For convenience, a few configuration files are provided inside the configs directory for common use-cases.  They are detailed below;
 
-* malware_hashscan.json
+* full_system_snapshot
+  * Recursively snapshot an entire drive starting at C:\ with no restrictions on extension and also performing SHA1 hash.
+* quick_common_malware_hashscan.json
   * Contains common directories where malware often lives and an extension allow-list for the most common file types encountered during incidents.
-* pre_analysis_snapshot.json
-  * Contains a configuration to snapshot an analysis/sandbox system prior to and following dynamic malware analysis
+* full_scan_common_malware_extensions.json
+  * Same as above but will scan for common malware extensions across the entire logical drive starting at C:\.
 
