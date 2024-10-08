@@ -489,6 +489,12 @@ func handleComparisonEfficient(oldSnap string, newSnap string, changeRecordChann
 					delete(oldRowsTemp, k)
 					changeRecordChannel <- changeRecord
 					countFilesModified += 1
+				} else if oldFile.Modified != v.Modified {
+					// Size Change
+					delete(newRowsTemp, k)
+					delete(oldRowsTemp, k)
+					changeRecordChannel <- changeRecord
+					countFilesModified += 1
 				} else {
 					// Hash is same, Size is same - same file with same name and same extension/hash/size - no change, remove
 					// 'Identical' File
