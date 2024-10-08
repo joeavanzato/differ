@@ -3,10 +3,11 @@
 
 ### What is it?
 
-differ is a purpose-built tool for generating and comparing ('diffing') metadata snapshots of logical drives for any necessary purpose - this may include tasks such as determining changes made by a specific piece of software, changes between Windows patches, malware analysis/sandboxing, integrity checks, etc.
+differ is a purpose-built tool for generating and comparing ('diffing') metadata snapshots of logical drives for any necessary purpose - this may include tasks such as determining changes made by a specific piece of software, changes between patches, malware analysis/sandboxing, integrity checks, etc.
+
+differ works cross-platform between Linux and Windows (and probably Mac as well but I don't have a test machine for that).
 
 ### Why?
-
 differ was created because I had a need to perform a configurable file system metadata snapshot and subsequent comparison and I could not identify a simple and flexible open-source tool for this task.
 
 Example Usecases Include:
@@ -97,8 +98,8 @@ Be aware there are caveats here - if a file is moved between two directories, we
 ### Common Extension Lists
 For convenience, a few configuration files are provided inside the configs directory for common use-cases.  They are detailed below;
 
-* full_system_snapshot
-  * Recursively snapshot an entire drive starting at C:\ with no restrictions on extension and also performing SHA1 hash.
+* full_system_snapshot_(win|linux).json
+  * Recursively snapshot an entire drive starting at C:\ (or \\ on Linux) with no restrictions on extension and also performing SHA1 hash.
 * quick_common_malware_hashscan.json
   * Contains common directories where malware often lives and an extension allow-list for the most common file types encountered during incidents.
 * full_scan_common_malware_extensions.json
